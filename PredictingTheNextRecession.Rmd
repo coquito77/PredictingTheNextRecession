@@ -1,0 +1,796 @@
+---
+title: "Predicting the next recession"
+author: "Moises Evangelista"
+date: "Prepared `r format(Sys.time(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    fig_caption: yes
+    fig_crop: no
+    toc: true
+    toc_depth: 2
+subtitle: Report Validation
+fontsize: 11pt
+header-includes:
+- \usepackage{palatino}
+- \renewcommand{\familydefault}{\sfdefault}
+- \fontfamily{ppl}\selectfont
+
+- \usepackage{xcolor}
+- \usepackage[normalem]{ulem}
+- \hypersetup{colorlinks,urlcolor=blue, linkcolor=black}
+- \usepackage{float}
+- \PassOptionsToPackage{obeyspaces}{url}
+- \usepackage{graphicx, array, blindtext, longtable, tikz, enumitem}
+- \usepackage[export]{adjustbox}
+
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(cache = TRUE, echo = FALSE, message = FALSE, warning = FALSE, include = FALSE,
+                      #dpi = 500
+                      dev = "cairo_pdf"
+                      ,fig.height = 9, fig.width = 7
+                      ,out.height = "\\textheight",  out.width = "\\textwidth")
+
+rm(list = ls()) #start with empty workspace
+
+options(scipen = 999)
+
+library(tidyverse)
+library(data.table)
+library(fredr)
+
+library(rvest)
+library(RSelenium)
+library(XML)
+
+theme_set(theme_minimal())
+
+```
+
+## R Markdown
+
+This is an analysis of an index developed by Claudia Sahm and other recession predicting data <https://www.hamiltonproject.org/assets/files/Sahm_web_20190506.pdf>
+
+
+```{r getData, eval = FALSE}
+
+# get PMI data by scrapping website 
+
+try(rm(rD))
+try(remDr$close())
+try(rm(remDr))
+gc()
+
+openBrowser  <- function(){
+  
+  eCaps <- list(
+    chromeOptions = list(
+      args = c('--no-sandbox', '--disable-gpu', '--start-maximized','--disable-popup-blocking','--disable-extensions'),
+      prefs = list(
+        # "profile.default_content_settings.popups" = 0L,
+        # "profile.default_content_setting_values.automatic_downloads" = 1L,
+        # "download.prompt_for_download" = FALSE,
+        # "download.directory_upgrade" = TRUE,
+        # "safebrowsing.enabled" = TRUE,
+        # "safebrowsing.disable_download_protection" = TRUE,
+        "profile.default_content_settings.popups" = 0L,
+        "download.prompt_for_download" = FALSE,
+        "download.default_directory" = getwd() # paste0("C:/selenium",'/',gsub("-|:| ", "",Sys.Date()))
+      )
+    )
+  )
+  
+  chromeVers <- binman::list_versions("chromedriver") %>% 
+    unlist(., use.names = FALSE) %>% 
+    rev
+  
+  url <- "https://www.yahoo.com/"
+  
+  for (i in seq_along(chromeVers)) {
+    
+    try(rm(rD))
+    try(remDr$close())
+    try(rm(remDr))
+    gc()
+    
+    # error handling - skips to next URL if it gets an error
+    rD <- try(rsDriver(browser = "chrome"
+                       ,verbose = TRUE
+                       ,chromever = chromeVers[i] # "73.0.3683.68"
+                       ,extraCapabilities = eCaps))
+    
+    # if (class(rD)[1] == "try-error")
+    #   next
+    # Sys.sleep(1)
+    
+    remDr <- try(rD[["client"]])
+    
+    Sys.sleep(3) # give time for browser to get ready
+    
+    try(remDr$navigate(url))
+    
+    out <-  tryCatch(
+      remDr$getCurrentUrl() %>%
+        as.character(),
+      error = function(cond) {
+        message(paste("URL does not seem to exist:", url))
+        message("Here's the original error message:")
+        message(cond)
+        # Choose a return value in case of error
+        return("not it")
+      }
+    )
+    
+    if (out == url)
+      
+      break
+    
+  }
+  
+  # webElems <- remDr$findElements("partial link text", "NEXT")
+  # 
+  # remDr$mouseMoveToLocation(webElement = webElems[[1]]) # move mouse to the element we selected
+  # remDr$click()
+  # 
+  # Sys.sleep(2)
+  
+  assign('rD', rD, 1)
+  assign('remDr', remDr, 1)
+  assign('eCaps', eCaps, 1)
+  
+}
+
+openBrowser()
+
+startTime <- Sys.time()
+
+remDr$navigate("https://www.quandl.com/data/ISM/MAN_PMI-PMI-Composite-Index")
+
+webElem <- remDr$findElement("css", "body")
+webElem$sendKeysToElement(list(key = "end")) # navigate to the bottom of the page
+
+Sys.sleep(2)
+option <- remDr$findElement(using = 'xpath' # navigate to the tab that has the PMI monthly numbers
+                            ,'//*[@id="ember16"]/div[1]/section/section/section/section/div[2]/header/span[2]')
+
+option$clickElement()
+
+Sys.sleep(2)
+
+iterations <- 1:10 # get a list of iterations to through
+
+dateFields <- remDr$findElements(using = "class", value = "query-option") # get data entry fields to update
+
+resHeaders <- unlist(lapply(dateFields, function(x) {x$getElementText()}))
+
+doc <- htmlParse(remDr$getPageSource()[[1]])
+
+dateInputs <- capture.output(doc) %>% as.tibble %>% 
+  filter(grepl("dataset-export-date", value)) %>%
+  mutate(value = sub(".*(ember\\d{3}).*", "\\1", value),
+         test = 1) %>% 
+  .$value
+
+startTime <- Sys.time()
+
+temp <- list() #create an empty list
+
+for (i in seq_along(iterations)) {
+  
+  timediff <- Sys.time() - startTime 
+  
+  print(paste0(i,"/", length(iterations)
+               ," "
+               ,as.double(timediff, units = "auto") %>% signif(.,3)
+               ," "
+               ,units(timediff) ))
+  
+  if(i == 1) {
+    
+    Sys.sleep(1)
+    
+  } else {
+    
+    Sys.sleep(3) # wait for page to refresh
+    
+  }
+  
+  x <- readHTMLTable(remDr$getPageSource()[[1]]) %>% 
+    .[[1]] %>% 
+    mutate(series_id = "PMI",
+           date = as.Date(as.character(V1)),
+           V2 = as.numeric(as.character(V2))) %>% 
+    select(date, series_id, value = V2)
+  
+  temp[[i]] <- x
+  if ( is.element(as.Date("1990-01-01"),
+                  x$date)
+  ) {
+    print("Jan 1990 is in the monthly data, stopping loop")
+    break
+  }
+  
+  # from input field, 10 years before the last imported month
+  
+  fromDate <- remDr$findElement(using = 'xpath',
+                                paste0("//*[@id='"
+                                       ,dateInputs[1]       
+                                       ,"']")
+  )
+  
+  fromDate$clearElement()
+  fromDate$sendKeysToElement(list(
+    seq(x$date %>%
+          min(., na.rm = TRUE), length = 2, by =
+          "-10 years")[2] %>%
+      gsub("-", "", .)
+    ,
+    "\uE007"
+  ))
+  
+  Sys.sleep(2)
+  
+  # to input feld
+  toDate <- remDr$findElement(using = 'xpath',
+                              paste0("//*[@id='"
+                                     , dateInputs[2]
+                                     , "']"))
+  toDate$clearElement()
+  toDate$sendKeysToElement(list(x$date %>%
+                                  min(., na.rm = TRUE) %>% 
+                                  gsub("-", "", .)
+                                , "\uE007"))
+  
+}
+
+pmi_info <- temp %>% # head(1000) %>%
+  plyr::ldply(data.frame) %>% 
+  distinct()
+
+# get calf unemployment filings
+
+remDr$navigate("https://oui.doleta.gov/unemploy/claims.asp")
+
+option <- remDr$findElement(using = 'xpath'
+                            , '//*[@id="content"]/table/tbody/tr[1]/td/input[2]') # 
+option$clickElement()
+
+option <- remDr$findElement(using = 'xpath', '//*[@id="states"]/option[5]')
+option$clickElement()
+
+clickButton <- remDr$findElement(using = "name", value = "submit")
+clickButton$sendKeysToElement(list("\uE007"))
+
+Sys.sleep(1)
+
+CalifUnempFiling <- read_html(remDr$getPageSource()[[1]]) %>% 
+  html_table(fill = TRUE, header = NA) %>%
+  .[[1]]
+
+ColNamePosition <- grep("State",CalifUnempFiling$X1)
+
+CalifUnempFiling <- CalifUnempFiling %>% 
+  setNames( .[ColNamePosition, ] %>% unlist() %>% as.character()) %>%
+  setNames( make.names(names(.), unique = TRUE)) %>% 
+  setNames(gsub("[^[:alnum:]]", perl = TRUE, "", names(.))) %>% 
+  select(-contains("NA")) %>% 
+  mutate_at(vars(InitialClaims, ContinuedClaims:InsuredUnemploymentRate),
+            list(~ as.numeric(as.character(gsub("[^[:digit:].]", "", .))))) %>%
+  mutate_at(vars(Filedweekended,ReflectingWeekEnded),
+            list(~ as.Date(., format = "%m/%d/%Y"))) %>% 
+  filter(!is.na(Filedweekended))
+
+remDr$close() # close the browser
+rm(rD)
+gc()
+
+rm(list = setdiff(ls(), c("pmi_info", "CalifUnempFiling")))
+
+# Check to see that the expected key is output in your R console
+
+fredr_set_key(Sys.getenv("FRED_API_KEY"))
+
+fredr_releases() %>% View("test")
+
+fredr_series_search_text(
+  search_text = "unemployment",
+  filter_variable = "frequency",
+  filter_value = "Monthly"
+) %>% view("test")
+
+fredr_series_search_text(
+  search_text = "index"
+  # filter_variable = "frequency",
+  # filter_value = "Monthly"
+) %>% view("test")
+
+fredr_series_tags(series_id = "UNRATE", order_by = "group_id")%>% view("test")
+
+CALOSA7URN <- fredr(
+  series_id = "CALOSA7URN",
+  observation_start = as.Date("1990-01-01")) %>% 
+  data.table::setattr(., "comment","Unemployment Rate in Los Angeles County, CA; Not Seasonally Adjusted; NSA")
+
+CAUR <- fredr(
+  series_id = "CAUR",
+  observation_start = as.Date("1989-01-01")) %>% 
+  data.table::setattr(., "comment","Unemployment Rate in California; Seasonally Adjusted; NSA")
+
+CAURN <- fredr(
+  series_id = "CAURN",
+  observation_start = as.Date("1989-01-01")) %>% 
+  data.table::setattr(., "comment","Unemployment Rate in California; Not Seasonally Adjusted; NSA")
+
+UNRATE <- fredr(
+  series_id = "UNRATE",
+  observation_start = as.Date("1989-01-01")) %>% 
+  data.table::setattr(., "comment","Civilian Unemployment Rate; Not Seasonally Adjusted; NSA")
+
+CPIAUCSL <- fredr(
+  series_id = "CPIAUCSL",
+  observation_start = as.Date("1990-01-01")) %>% 
+  data.table::setattr(., "comment","Consumer Price Index for All Urban Consumers: All Items;Index 1982-1984=100; Seasonally Adjusted")
+
+LXXRSA <- fredr(
+  series_id = "LXXRSA",
+  observation_start = as.Date("1990-01-01")) %>% 
+  data.table::setattr(., "comment","S&P/Case-Shiller CA-Los Angeles Home Price Index; Index Jan 2000 = 100; Seasonally Adjusted")
+
+fredr_series_search_text(
+  search_text = "interest"
+  # filter_variable = "frequency",
+  # filter_value = "Monthly"
+) %>% view("test")
+
+T10Y3M <- fredr(
+  series_id = "T10Y3M",
+  observation_start = as.Date("1990-01-01"))  %>% 
+  data.table::setattr(., "comment", "Series is calculated as the spread between 10-Year Treasury Constant Maturity (BC_10YEAR) and 3-Month Treasury Constant Maturity (BC_3MONTH). Starting with the update on June 21, 2019, the Treasury bond data used in calculating interest rate spreads is obtained directly from the U.S. Treasury Department (https://www.treasury.gov/resource-center/data-chart-center/interest-rates/Pages/TextView.aspx?data=yield).")
+
+T10Y2YM <- fredr(
+  series_id = "T10Y2YM",
+  observation_start = as.Date("1990-01-01"))  %>% 
+  data.table::setattr(., "comment", "Series is calculated as the spread between 10-Year Treasury Constant Maturity (BC_10YEARM) and 
+                      Constant Maturity (BC_2YEARM). Starting with the update on June 21, 2019, the Treasury bond data used in calculating interest rate spreads is obtained directly from the U.S. Treasury Department (https://www.treasury.gov/resource-center/data-chart-center/interest-rates/Pages/TextView.aspx?data=yield).")
+
+
+wikiRecessions <- xml2::read_html(httr::GET("https://en.wikipedia.org/wiki/List_of_recessions_in_the_United_States", httr::user_agent("myagent")))
+
+recessions <- wikiRecessions %>% 
+  rvest::html_nodes(xpath = '//table[3]') %>% 
+  rvest::html_nodes("td:nth-child(2)") %>% 
+  rvest::html_text() %>% 
+  iconv("UTF-8", "UTF-8") %>%
+  gsub("([[:digit:]])([A-z])", "\\1 \\2", .) %>% # space when a number and letters butt together
+  gsub("[^[:alnum:]]", perl = TRUE, " ", .) %>% # leave only numbers and letters
+  sub("^\\d{4}","",.) %>%  # remove starting numbers
+  trimws(.) %>% # remove blank spaces 
+  stringr::word(string = ., start = 1, end = 4, sep = fixed(" ")) %>% # extract first four words
+  tibble::enframe(name = NULL) %>% # make a df
+  separate(value , into = c("StartMo","StartYr","EndMo","EndYr")
+           , sep = " ") %>%
+  mutate(startDate = paste0(StartMo, "-01-", StartYr),
+         startDate = as.Date(startDate, format ="%B-%d-%Y"),
+         endDate = paste0(EndMo, "-01-", EndYr),
+         endDate = as.Date(endDate, format ="%B-%d-%Y"))
+
+rm(list = setdiff(ls(), c("pmi_info", "recessions", "T10Y3M", "T10Y2YM"
+                          , "CALOSA7URN", "UNRATE", "CAUR", "CAURN"
+                          ,"CPIAUCSL", "LXXRSA", "CalifUnempFiling")))
+
+dataExtracted <- Sys.time()
+
+save.image(file = "econData.Rdata")
+
+```
+
+
+```{r plotMetrics, eval = TRUE, include= TRUE}
+
+rm(list = ls(all = TRUE)) #start with empty workspace
+
+load(file = "econData.Rdata")
+
+human_numbers <- function(x = NULL, smbl ="", signif = 2){
+  # https://stackoverflow.com/questions/11610377/
+  humanity <- function(y){
+    
+    if (!is.na(y)){
+      tn <- round(abs(y) / 1e12, signif)
+      b <- round(abs(y) / 1e9, signif)
+      m <- round(abs(y) / 1e6, signif)
+      k <- round(abs(y) / 1e3, signif)
+      
+      if ( y >= 0 ){
+        y_is_positive <- ""
+      } else {
+        y_is_positive <- "-"
+      }
+      
+      if ( k < 1 ) {
+        paste0( y_is_positive, smbl, round(abs(y), signif ))
+      } else if ( m < 1){
+        paste0 (y_is_positive, smbl,  k , "k")
+      } else if (b < 1){
+        paste0 (y_is_positive, smbl, m ,"m")
+      }else if(tn < 1){
+        paste0 (y_is_positive, smbl, b ,"bn")
+      } else {
+        paste0 (y_is_positive, smbl,  comma(tn), "tn")
+      }
+    } else if (is.na(y) | is.null(y)){
+      "-"
+    }
+  }
+  
+  sapply(x,humanity)
+}
+
+
+theme_CF <- function () {
+ #theme_bw(base_size=12, base_family = "Helvetica") %+replace%
+   # hrbrthemes::theme_ipsum_rc(plot_title_size = 20, subtitle_size = 15, caption_size = 10) +
+    theme_bw() +
+    theme(panel.border = element_blank(),
+          strip.background = element_rect(fill="blue"), # element_blank(),
+          strip.text.x = element_text(size = 5,
+                                      colour = "white",
+                                      angle = 00,
+                                      hjust = 0 #, lineheight = .5
+          ),
+          axis.title.y = element_text(face = "bold", size = 15, angle = 90)
+          ,axis.title.x = element_text(face = "bold", size = 15, angle = 00, hjust = 0),
+          axis.text.x = element_text(face = "bold", size = 10, angle = 00)
+          ,axis.text.y = element_text(face = "bold", size = 10, angle = 00),
+          legend.position = "top")
+}
+
+UNRATE <- UNRATE %>% 
+  # filter(between(date, as.Date("2006-01-01"), as.Date("2011-01-01"))) %>% 
+  as.data.table %>%  # convert to data.table from data.frame
+  mutate(avg3Mo = frollmean(.[, value], 3),
+         min12Mo = zoo::rollapply(value, 12, min, na.rm = TRUE, fill = NA, align = "right")
+         ,Sahms_Index = avg3Mo-min12Mo)
+
+combo <-  bind_rows(pmi_info, T10Y3M, T10Y2YM, CALOSA7URN, CAUR, CAURN
+                    , CPIAUCSL, LXXRSA
+                    , UNRATE %>% 
+                      select(date, series_id, value)
+                    ,UNRATE %>% 
+                      select(date, value = Sahms_Index) %>% 
+                      mutate(series_id = "Sahms_Index")
+                    , CalifUnempFiling %>% # head() %>% 
+                      select(-State) %>% 
+                      pivot_longer(-c(ReflectingWeekEnded,Filedweekended)) %>% 
+                      select(date = ReflectingWeekEnded
+                             ,series_id =name
+                             , value)
+) %>% 
+  mutate(numbrScale = ifelse(value >= 30,"HighNumber", "LowNumber"),
+         dataLabel = case_when(series_id =="PMI"~ "PMI Composite Index",
+                               series_id =="T10Y3M"~ "Spread  between 10-Year Treasury and 3-Month Treasury Constant Maturity",
+                               series_id =="T10Y2YM"~ "Spread  between 10-Year Treasury and 2-Year Treasury Constant Maturity",
+                               series_id =="CALOSA7URN"~ "Unemployment Rate in Los Angeles County, CA; Not Seasonally Adjusted",
+                               series_id =="CAUR"~ "Unemployment Rate in California; Not Seasonally Adjusted",
+                               series_id =="CAURN"~ "Unemployment Rate in California; Seasonally Adjusted",
+                               series_id =="CPIAUCSL"~ "Consumer Price Index for All Urban Consumers: All Items;Index 1982-1984=100",
+                               series_id =="LXXRSA"~ "CS&P/Case-Shiller CA-Los Angeles Home Price Index; Index Jan 2000 = 100",
+                               series_id =="UNRATE"~ "Civilian Unemployment Rate; Not Seasonally Adjusted",
+                               series_id =="Sahms_Index"~ "Sahm’s Index",
+                               series_id =="ContinuedClaims"~ "California Continued Claims",
+                               series_id =="CoveredEmployment"~ "California Covered Employment",
+                               series_id =="InitialClaims"~ "California Initial Claims",
+                               series_id =="InsuredUnemploymentRate"~ "California Insured UnemploymentRate")) %>% 
+  filter(!is.na(numbrScale)) %>% 
+  filter(date >= "1990-01-01")
+
+# RColorBrewer::display.brewer.all(n=10, exact.n=FALSE) # display palettes
+
+getPalette = grDevices::colorRampPalette(RColorBrewer::brewer.pal(
+  length(unique(combo$series_id))
+  , "Dark2"))
+
+ggplot() +
+  geom_rect(data = recessions %>% filter(startDate >= "1990-01-01")
+            , aes(xmin = startDate, xmax = endDate
+                  , ymin = -Inf, ymax = Inf),
+            fill = "#999999", alpha = 0.2, colour = NA) +
+  geom_hline(data = data.frame(dataLabel = "Spread  between 10-Year Treasury and 3-Month Treasury Constant Maturity",
+                               value = 0), aes(yintercept = value), linetype="dashed", color = "blue") +
+  geom_hline(data = data.frame(dataLabel = "Spread  between 10-Year Treasury and 2-Year Treasury Constant Maturity",
+                               value = 0), aes(yintercept = value), linetype="dashed", color = "blue") +
+  geom_hline(data = data.frame(dataLabel = "Sahm’s Index",
+                               value = .5), aes(yintercept = value)
+             , linetype="dashed", color = "red") +
+  geom_line(data = combo, aes(x = date, y = value
+                              , color = series_id)
+            ,show.legend = FALSE) +
+  facet_wrap(~dataLabel, scales = "free_y"
+             , ncol = 2, labeller = labeller(dataLabel = label_wrap_gen(25))) +
+  # scale_colour_brewer(palette = "Paired") +
+  scale_color_manual(values =getPalette( length(unique(combo$series_id)))) +
+  scale_y_continuous(label = human_numbers) +
+  # scale_y_continuous(label= scales::comma) +
+  theme_CF() +
+  theme(axis.title.y = element_blank())
+
+```
+
+
+```{r Sahms_Index, eval = TRUE, include= TRUE}
+
+ggplot() +
+  geom_rect(data = recessions %>% filter(startDate >= "2000-01-01")
+            , aes(xmin = startDate, xmax = endDate
+                  , ymin = -Inf, ymax = Inf),
+            fill = "#999999", alpha = 0.2, colour = NA) +
+  geom_hline(data = data.frame(dataLabel = "Sahm’s Index",
+                               value = .5), aes(yintercept = value)
+             , linetype="dashed", color = "red") +
+  geom_line(data = combo %>% 
+              filter(series_id == "InitialClaims") %>% 
+              filter(date >= "2000-01-01"), aes(x = date, y = value
+                                                , color = series_id)
+            ,show.legend = FALSE) +
+  theme_CF() +
+  theme(axis.title.y = element_blank())
+
+ggplot() +
+  geom_rect(data = recessions %>% filter(startDate >= "1990-01-01")
+            , aes(xmin = startDate, xmax = endDate
+                  , ymin = -Inf, ymax = Inf),
+            fill = "#999999", alpha = 0.2, colour = NA) +
+  geom_hline(data = data.frame(dataLabel = "Sahm’s Index",
+                               value = .5), aes(yintercept = value)
+             , linetype="dashed", color = "red") +
+  geom_line(data = combo %>% 
+              filter(series_id == "Sahms_Index"), aes(x = date, y = value
+                                                      , color = series_id)
+            ,show.legend = FALSE) +
+  facet_wrap(~dataLabel, scales = "free_y"
+             , nrow = 2, labeller = labeller(dataLabel = label_wrap_gen(25))) +
+  scale_colour_brewer(palette = "Paired") +
+  theme_CF() +
+  theme(axis.title.y = element_blank())
+
+```
+
+
+```{r plotMetrics_CaliUnemployment, eval = TRUE, include= TRUE, cache = FALSE}
+
+# correlation between calif unemployment rate and continued filings
+
+corr_eqn <- function(x, y, digits = 2) {
+  corr_coef <- round(cor(x, y, use = "na.or.complete"), digits = digits)
+  paste("italic(r) == ", corr_coef)
+}
+
+comboUnempCorr <- CalifUnempFiling %>%
+  filter(ReflectingWeekEnded >= "1990-01-01") %>% # head(50) %>% 
+  mutate(YrMonth = format(ReflectingWeekEnded,"%Y-%m")) %>% 
+  group_by(YrMonth) %>% 
+  mutate(id = row_number(YrMonth)) %>% 
+  filter(id == max(id)) %>% 
+  ungroup %>%
+  select(ContinuedClaims, YrMonth) %>% 
+  left_join(CAUR %>% 
+              mutate(YrMonth = format(date ,"%Y-%m"))
+  ) 
+
+fit <- lm(value ~ ContinuedClaims, data = comboUnempCorr)
+summary(fit) # show results
+
+newdata <- comboUnempCorr %>% 
+  filter(is.na(date)) %>% 
+  select(ContinuedClaims)
+
+predict(fit, newdata, type = "response")
+
+predict(fit, newdata, type = "terms")
+
+comboUnempCorr <- comboUnempCorr %>% 
+  bind_cols(  predict(fit, comboUnempCorr, type = "response", interval = c("confidence")) %>% 
+                as.tibble())
+
+labels <- data.frame(x = 700000, y = 13
+                     , label = corr_eqn( comboUnempCorr$ContinuedClaims
+                                         , comboUnempCorr$value)
+)
+
+comboUnempCorr %>% 
+  ggplot() +
+  #geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") +
+  # geom_curve(
+  #   aes(x = 41, y = 54, xend = 52, yend = 53), curvature = -0.2, color = "azure4",
+  #   size = .5, ncp = 45, 
+  #   arrow = arrow(length = unit(0.4, "cm"))) +
+  #annotate("text", x = 1200000, y = 14, label = "45 degree line", color = "azure4") +
+  geom_smooth(aes(ContinuedClaims, value), method = 'lm', se = FALSE) +
+  geom_point( aes(ContinuedClaims, value),
+              alpha = .8,
+              size = 1,
+              shape = 21, fill = NA, stroke = .5,
+              color = "red") + 
+  geom_text(data = labels, aes(x = x, y = y,
+                               label = label), parse = TRUE
+            , color  = "blue") +
+  ggrepel::geom_text_repel( data = comboUnempCorr %>% 
+                              filter( date == max(date, na.rm = TRUE))
+                            , aes(ContinuedClaims, value
+                                  , label =  paste("Most Recent month\n U-rate =",
+                                                   value, "for", YrMonth )),
+                            hjust = 0, vjust = 0
+                            , size = 4, segment.alpha = .5) +
+  # ggplot() +
+  geom_point( data = comboUnempCorr %>% 
+                filter(grepl("2020-03|2020-04", YrMonth  ))
+              , aes(ContinuedClaims, fit),
+              alpha = 1,
+              size = 3,
+              shape = 21, fill = NA, stroke = .5,
+              color = "#99d594") +
+  ggrepel::geom_text_repel( data = comboUnempCorr %>% 
+                              filter(grepl("2020-03|2020-04", YrMonth  ))
+                            , aes(x = ContinuedClaims, y = fit
+                                  , label = paste("Estimated\n U-rate =", round(fit,1), "\nfor", YrMonth ))
+                            ,hjust = 0, vjust = 0
+                            , size = 4, segment.alpha = .5
+                            , color = "#99d594") +
+  guides(colour = "none") +
+  labs(title = paste("Scatter plot of Calif Unemployment and Continued Claims\nbased on"
+                     ,nrow(comboUnempCorr),
+                     "months of data")
+       ,x = "Continued Claims"
+       ,y = "Calif Unemployment")
+
+# https://towardsdatascience.com/linear-and-bayesian-modelling-in-r-predicting-movie-popularity-6c8ef0a44184
+
+if(FALSE) {
+  
+intersects <- UNRATE %>% 
+  filter(date >= "1990-01-01") %>% 
+  select(date, value = Sahms_Index) %>% 
+  mutate(series_id = "Sahms_Index",
+         Sahms_Threshold = .5
+         # diff = value - Sahms_Threshold,
+         # diff_label = scales::comma(diff,accuracy = .01)
+  ) %>% 
+  left_join(recessions %>% 
+              select(startDate, endDate) %>%
+              gather(key = type, value = date)) %>% 
+  fill(type) %>% 
+  mutate(type = case_when(is.na(type) ~ "endDate",
+                          TRUE ~  type),
+         lgst = case_when(type == "startDate" ~ 1,
+                          TRUE ~ 0)) %>% 
+  na.omit() 
+
+model <- glm( lgst ~ value, family = binomial(link = 'logit'), data = intersects)
+
+summary(model)
+
+anova(model, test="Chisq")
+
+intersects$predicted_GML_Reg <- predict(model)
+intersects$predictedValue <- predict(model, type="response", se.fit = TRUE)$fit
+intersects$predictedValueSE_fit <- predict(model, type="response", se.fit = TRUE)$se.fit
+
+# predict recession for value in 2019-07
+
+newdata <- data.frame(value = 0.06666667)
+
+predict(model, newdata, type = "response")
+
+# the predicted probability is 0.04 percent as of July 2019
+
+library(pscl)
+pR2(model)
+
+intersects <- intersects %>% 
+  mutate(groupFit = case_when(predicted_GML_Reg >= 0 ~ 1, 
+                              TRUE ~ 0),
+         groupFitDecile = ntile(predicted_GML_Reg, 10),
+         testCut = cut(scales::rescale(predicted_GML_Reg)
+                       , seq(from = 0, to = 1, by = 0.1)
+                       ,include.lowest = TRUE))
+
+intersects %>% 
+  count( type, lgst, groupFit, groupFitDecile, testCut) %>% 
+  print(n = 30)
+
+library(e1071)
+library(caret)
+
+confMatrix <- confusionMatrix(data = as.factor(intersects$groupFit),
+                              reference = as.factor(intersects$lgst))
+
+confMatrix
+
+makeplot_mosaic <- function(data, x, y, ...){
+  
+  xvar <- deparse(substitute(x))
+  yvar <- deparse(substitute(y))
+  
+  #  xvar <- deparse(substitute(testCut)); yvar <-deparse(substitute(testCut))
+  #   xvar <- data$testCut; yvar <- data$testCut  
+  # mytable <- data;    mydata <- data[c("rptType", "RptLocation")];
+  
+  mydata <- data[c(xvar, yvar)];
+  mytable <- table(mydata);
+  widths <- c(0, cumsum(apply(mytable, 1, sum)));
+  heights <- apply(mytable, 1, function(x){c(0, cumsum(x/sum(x)))});
+  
+  alldata <- data.frame();
+  allnames <- data.frame();
+  
+  for(i in 1:nrow(mytable)){
+    
+    for(j in 1:ncol(mytable)){
+      
+      alldata <- rbind(alldata, c(widths[i], 
+                                  widths[i+1], 
+                                  heights[j, i], 
+                                  heights[j+1, i]));
+    }
+  }
+  colnames(alldata) <- c("xmin", "xmax", "ymin", "ymax")
+  
+  alldata[[xvar]] <- rep(dimnames(mytable)[[1]], 
+                         rep(ncol(mytable), nrow(mytable)));
+  
+  alldata[[yvar]] <- rep(dimnames(mytable)[[2]], nrow(mytable));
+  
+  #   qxvar <- enquo(xvar)
+  #   qyvar <- enquo(yvar)
+  #   
+  # alldata <- alldata %>% group_by(!!qxvar, !!qyvar) %>%
+  # mutate(labelPosition = mean(c(xmin, xmax)))
+  
+  alldata <- alldata %>% group_by_(as.name(xvar), as.name(yvar)) %>%
+    mutate(labelPosition = mean(c(xmin, xmax)))
+  
+  ggplot(alldata, aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax)) +
+    geom_rect(color="white", aes_string(fill=yvar), alpha = .8) +
+    xlab(paste(xvar, "(count)")) +
+    ylab(paste(yvar, "(proportion)"));
+}
+
+# visualise the regression results
+
+intersects %>% 
+  makeplot_mosaic(., testCut, type ) + 
+  scale_y_continuous("Percent",
+                     labels = scales::percent,
+                     trans = "reverse",
+                     breaks = seq(from = 0, to = 1, by = 0.3)
+  ) + 
+  geom_text(aes(label = as.character(testCut), x = labelPosition, y = 0.9)
+            , size = 2, angle = 90) +
+  # scale_x_continuous(breaks = seq(0, nrow(mergeRptLocations), by = 30)) +
+  scale_fill_brewer(name = "", palette="Dark2")
+
+ct <- with(intersects, descr::CrossTable(testCut, type, expected = TRUE,
+                                         chisq = TRUE, prop.chisq = TRUE,fisher = TRUE,
+                                         dnn = c("testCut", "type")))
+
+plot(ct, las=1)
+print(ct)
+
+ct$CST$p.value
+ct$chisq.corr
+
+testDataStat <- paste0(ct$CST$method, ", ",
+                       "df = ", ct$CST$parameter, ", ",
+                       "X-squared = ", round(as.vector(ct$CST$statistic),3),
+                       ", p-value = ", signif(ct$CST$p.value,4))
+
+if(signif(ct$CST$p.value,4) <= .05) {
+  paste( "Given that p-value of", signif(ct$CST$p.value,4), "is less than alpha of 0.05, we reject the null hypothesis that there relationship of the populations is independent. We conclude that they are dependent, that there is an association between the two variables.",(testDataStat))} else {
+    paste( "Given that p-value of", signif(ct$CST$p.value,4), "is more than alpha of 0.05, we do not reject the null hypothesis that there relationship of the populations is independent. We conclude that they are independent, that there is no association between the two variables.",(testDataStat))
+  }
+
+}
+
+```
