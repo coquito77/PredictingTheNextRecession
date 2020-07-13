@@ -49,6 +49,17 @@ theme_set(theme_minimal())
 
 ```
 
+```{r TODO, eval=FALSE}
+
+# get data for consumser sentiment
+# get data for 10 year US yield
+
+list.files() %>% 
+  .[grepl("PredictingTheNextRecession.pdf", .)] %>% 
+  file.copy(., to = "PredictingTheNextRecession_Outdated_20200712.pdf")
+
+```
+
 ## R Markdown
 
 This is an analysis of an index developed by Claudia Sahm and other recession predicting data <https://www.hamiltonproject.org/assets/files/Sahm_web_20190506.pdf>
@@ -89,6 +100,8 @@ openBrowser  <- function(){
   url <- "https://www.yahoo.com/"
   
   for (i in seq_along(chromeVers)) {
+    
+      system("taskkill /im java.exe /f", intern=FALSE, ignore.stdout=FALSE)
     
     try(rm(rD))
     try(remDr$close())
@@ -300,13 +313,18 @@ fredr_series_search_text(
   filter_value = "Monthly"
 ) %>% view("test")
 
+
 fredr_series_search_text(
-  search_text = "index"
+  search_text = "Surveys"
   # filter_variable = "frequency",
   # filter_value = "Monthly"
 ) %>% view("test")
 
 fredr_series_tags(series_id = "UNRATE", order_by = "group_id")%>% view("test")
+
+UMCSENT <- fredr(series_id = "UMCSENT", 
+                 observation_start = as.Date("1990-01-01")) %>% 
+  data.table::setattr(., "comment","Surveys of Consumers, http://www.sca.isr.umich.edu/")
 
 CALOSA7URN <- fredr(
   series_id = "CALOSA7URN",
@@ -377,7 +395,7 @@ recessions <- wikiRecessions %>%
          endDate = as.Date(endDate, format ="%B-%d-%Y"))
 
 rm(list = setdiff(ls(), c("pmi_info", "recessions", "T10Y3M", "T10Y2YM"
-                          , "CALOSA7URN", "UNRATE", "CAUR", "CAURN"
+                          , "CALOSA7URN", "UNRATE", "CAUR", "CAURN", "UMCSENT"
                           ,"CPIAUCSL", "LXXRSA", "CalifUnempFiling")))
 
 dataExtracted <- Sys.time()
@@ -455,7 +473,7 @@ UNRATE <- UNRATE %>%
          ,Sahms_Index = avg3Mo-min12Mo)
 
 combo <-  bind_rows(pmi_info, T10Y3M, T10Y2YM, CALOSA7URN, CAUR, CAURN
-                    , CPIAUCSL, LXXRSA
+                    , CPIAUCSL, LXXRSA,UMCSENT
                     , UNRATE %>% 
                       select(date, series_id, value)
                     ,UNRATE %>% 
@@ -482,6 +500,7 @@ combo <-  bind_rows(pmi_info, T10Y3M, T10Y2YM, CALOSA7URN, CAUR, CAURN
                                series_id =="ContinuedClaims"~ "California Continued Claims",
                                series_id =="CoveredEmployment"~ "California Covered Employment",
                                series_id =="InitialClaims"~ "California Initial Claims",
+                               series_id == "UMCSENT" ~ "Surveys of Consumer",
                                series_id =="InsuredUnemploymentRate"~ "California Insured UnemploymentRate")) %>% 
   filter(!is.na(numbrScale)) %>% 
   filter(date >= "1990-01-01")
@@ -497,20 +516,21 @@ ggplot() +
             , aes(xmin = startDate, xmax = endDate
                   , ymin = -Inf, ymax = Inf),
             fill = "#999999", alpha = 0.2, colour = NA) +
-  geom_hline(data = data.frame(dataLabel = "Spread  between 10-Year Treasury and 3-Month Treasury Constant Maturity",
-                               value = 0), aes(yintercept = value), linetype="dashed", color = "blue") +
-  geom_hline(data = data.frame(dataLabel = "Spread  between 10-Year Treasury and 2-Year Treasury Constant Maturity",
-                               value = 0), aes(yintercept = value), linetype="dashed", color = "blue") +
-  geom_hline(data = data.frame(dataLabel = "Sahm’s Index",
-                               value = .5), aes(yintercept = value)
-             , linetype="dashed", color = "red") +
-  geom_line(data = combo, aes(x = date, y = value
-                              , color = series_id)
+  geom_line(data = combo %>% 
+              filter(grepl("CALOSA7URN|CAUR|CAURN|ContinuedClaims|CoveredEmployment|CPIAUCSL|InitialClaims", series_id))
+            , aes(x = date, y = value
+                  , color = series_id)
+            ,size = .5
+            ,alpha = .9
             ,show.legend = FALSE) +
   facet_wrap(~dataLabel, scales = "free_y"
              , ncol = 2, labeller = labeller(dataLabel = label_wrap_gen(25))) +
   # scale_colour_brewer(palette = "Paired") +
-  scale_color_manual(values =getPalette( length(unique(combo$series_id)))) +
+  scale_color_manual(values = getPalette( combo %>% 
+ filter(grepl("CALOSA7URN|CAUR|CAURN|ContinuedClaims|CoveredEmployment|CPIAUCSL|InitialClaims", series_id)) %>% 
+                                            .$series_id %>% 
+                                            unique %>% 
+                                            length )) +
   scale_y_continuous(label = human_numbers) +
   # scale_y_continuous(label= scales::comma) +
   theme_CF() +
@@ -518,6 +538,43 @@ ggplot() +
 
 ```
 
+```{r plotMetrics1, eval = TRUE, include= TRUE}
+
+ggplot() +
+  geom_rect(data = recessions %>% filter(startDate >= "1990-01-01")
+            , aes(xmin = startDate, xmax = endDate
+                  , ymin = -Inf, ymax = Inf),
+            fill = "#999999", alpha = 0.2, colour = NA) +
+  geom_hline(data = data.frame(dataLabel = "Spread  between 10-Year Treasury and 3-Month Treasury Constant Maturity",
+                               value = 0), aes(yintercept = value), linetype="dashed", color = "blue") +
+  geom_hline(data = data.frame(dataLabel = "Spread  between 10-Year Treasury and 2-Year Treasury Constant Maturity",
+                               value = 0), aes(yintercept = value), linetype="dashed", color = "blue") +
+  geom_hline(data = data.frame(dataLabel = "Sahm’s Index",
+                               value = .5), aes(yintercept = value)
+             , linetype="dashed", color = "red") +
+    geom_hline(data = data.frame(dataLabel = "PMI Composite Index",
+                               value = 50), aes(yintercept = value)
+             , linetype="dashed", color = "red") +
+  geom_line(data = combo %>% 
+              filter(!grepl("CALOSA7URN|CAUR|CAURN|ContinuedClaims|CoveredEmployment|CPIAUCSL|InitialClaims", series_id)), aes(x = date, y = value
+                                                                                                                               , color = series_id)
+            ,size = .5
+            ,alpha = .9
+            ,show.legend = FALSE) +
+  facet_wrap(~dataLabel, scales = "free_y"
+             , ncol = 2, labeller = labeller(dataLabel = label_wrap_gen(25))) +
+  # scale_colour_brewer(palette = "Paired") +
+  scale_color_manual(values = getPalette( combo %>% 
+                                            filter(!grepl("CALOSA7URN|CAUR|CAURN|ContinuedClaims|CoveredEmployment|CPIAUCSL|InitialClaims", series_id)) %>% 
+                                            .$series_id %>% 
+                                            unique %>% 
+                                            length )) +
+  scale_y_continuous(label = human_numbers) +
+  # scale_y_continuous(label= scales::comma) +
+  theme_CF() +
+  theme(axis.title.y = element_blank())
+
+```
 
 ```{r Sahms_Index, eval = TRUE, include= TRUE}
 
@@ -590,9 +647,39 @@ predict(fit, newdata, type = "response")
 
 predict(fit, newdata, type = "terms")
 
+# define function that returns the SSE
+
+x <- sse<- 1
+
+calcSSE <- function(x) {
+loessMod <- try(loess(value ~ ContinuedClaims,
+                      data = comboUnempCorr, span = x),
+                silent = T)
+
+res <- try(loessMod$residuals, silent = T)
+
+if (class(res) != "try-error") {
+if ((sum(res, na.rm = T) > 0)) {
+sse <- sum(res ^ 2)
+}
+} else{
+sse <- 99999
+}
+return(sse)
+}
+
+# Run optim to find span that gives min SSE, starting at 0.5
+optim(par = c(0.5), calcSSE, method = "SANN")
+
+loessMod10 <- loess(value ~ ContinuedClaims
+                    , data = comboUnempCorr, span = 3.286236) # 10% smoothing span
+
 comboUnempCorr <- comboUnempCorr %>% 
   bind_cols(  predict(fit, comboUnempCorr, type = "response", interval = c("confidence")) %>% 
-                as.tibble())
+                as.tibble()) %>% 
+  bind_cols(predict(loessMod10, comboUnempCorr, type = "response", interval = c("confidence")) %>% 
+              as.tibble() %>% 
+              rename(LoesssMod10 = value))
 
 labels <- data.frame(x = 700000, y = 13
                      , label = corr_eqn( comboUnempCorr$ContinuedClaims
@@ -625,14 +712,14 @@ comboUnempCorr %>%
                             , size = 4, segment.alpha = .5) +
   # ggplot() +
   geom_point( data = comboUnempCorr %>% 
-                filter(grepl("2020-03|2020-04", YrMonth  ))
+                filter(grepl("2020-03|2020-04|2020-05", YrMonth  ))
               , aes(ContinuedClaims, fit),
               alpha = 1,
               size = 3,
               shape = 21, fill = NA, stroke = .5,
               color = "#99d594") +
   ggrepel::geom_text_repel( data = comboUnempCorr %>% 
-                              filter(grepl("2020-03|2020-04", YrMonth  ))
+                              filter(grepl("2020-03|2020-04|2020-05", YrMonth  ))
                             , aes(x = ContinuedClaims, y = fit
                                   , label = paste("Estimated\n U-rate =", round(fit,1), "\nfor", YrMonth ))
                             ,hjust = 0, vjust = 0
